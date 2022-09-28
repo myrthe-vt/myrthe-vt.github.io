@@ -1,0 +1,698 @@
+---
+title: "Data analysis thesis"
+author: "Myrthe Vel Tromp"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Introduction
+In this RMarkdown file, I will perform the data analysis for my thesis. I will go over the hypotheses in more detail per section, but first shortly describe the experiment.</p>
+During the first session of the experiment, participants were presented with numerical facts such as "X out of 10 bus drivers are women", and had to make a prediction (e.g. 2 out of 10 bus drivers are women). They then were given an answer (given_answer) that was either correct or manipulated to be obviously false or implausible (e.g. 8 out of 10 bus drivers are women). Participants then indicated how surprised they were on a scale of 1-5, and had the option to indicate that they thought the fact was manipulated to be implausible. After this training phase, participants were again presented with the same facts, and had to indicate what the answer was <i> that had been presented to them earlier</i>. </p>
+The second part of the experiment took place 2 days after the first one. Participants were again presented with numerical facts. Half of these facts were repeated from day 1, and the other half were new. Participants had to indicate what <i>they thought the correct answer was</i>, as well as how sure they were they had seen the fact before on a scale of 1-5 (definitely not seen before to definitely seen before). </p>
+</p>
+This setup allowed us to investigate three kinds of learning: </p>
+1. Immediate recall: how well do participants remember the given_answer they were just presented with? </p>
+2. Delayed recognition: how well can participants indicate whether they have seen a given fact before? </p>
+3. Do participants update their beliefs of the numerical facts presented to them, based on the given_answer? </p>
+</p>
+
+
+Additionally, we are specifically interested in the influence surprise and plausibility have on both immediate and delayed recall. We will perform two multilevel analyses, one for both kinds of learning, and investigate whether surprise and plausbility lead to a better fit of the multilevel model. We expect that for every model, facts that are surprising but still plausible are remembered better than facts that are implausible or facts that are not surprising.
+
+## Setup
+
+To prepare this file for conducting analyses, we set up the Rmarkdown settings, load the required libraries, and load in the data.
+```{r setup, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r loading the libraries, warning = FALSE, message = FALSE}
+library(lme4) #for model
+library(ggplot2) #for plots
+library(ggpubr) #for arranging plots into a grid
+library(car) #for performing the anova
+library(psych) #for calculating correlations
+library(dplyr) #for using %>% operator
+library(tidyverse) #for using summarise function
+library(emmeans) #for post-hoc analyses
+library(sjPlot) #for table outputs of model results
+library(effects) #for creating pretty plots
+library(simr) #for running post-hoc power simulations
+library(lattice) #for testing assumptions
+library(sjPlot) #for testing assumptions
+```
+
+```{r loading in the data}
+setwd("~/Library/CloudStorage/OneDrive-Personal/Sync/Studies/Research Master/Thesis/Data/4-Final version")
+
+data <- read.table("full_data.csv", header=T, sep=";")
+
+```
+
+## Item check
+
+First, we look at different variables to make sure values are as expected. We do this for: given_answer, riginal_estimate, surprise, recognition_answer, estimate_day2, and familiarity_rating.
+```{r quick data checks, warnings = FALSE}
+#First: making sure the data is preprocessed with numerical data
+data_item <- data
+data_item$item <- as.numeric(data_item$item)
+
+#Since these variables occurred on day 1 only, we filter out all items from day 2
+data_60 <- subset(data_item, item < 61)                          
+
+#given answer
+ggplot(data_60,aes(x=item,y = given_answer)) +
+  geom_bar(stat = "summary", fun= "mean")
+
+#original_estimate
+ggplot(data_60,aes(x=item,y = original_estimate)) +
+  geom_bar(stat = "summary", fun= "mean")
+
+#surprise
+ggplot(data_60,aes(x=item,y = surprise)) +
+  geom_bar(stat = "summary", fun= "mean")
+
+#recognition_answer
+ggplot(data_60,aes(x=item,y = recognition_answer)) +
+  geom_bar(stat = "summary", fun= "mean")
+
+#estimate_day2
+ggplot(data_60,aes(x=item,y = estimate_day2)) +
+  geom_bar(stat = "summary", fun= "mean")
+
+#familiarity_rating
+ggplot(data_60,aes(x=item,y = familiarity_rating)) +
+  geom_bar(stat = "summary", fun= "mean")
+
+```
+<br>
+The familiarity rating is very high for all items, meaning that participants are very good at remembering what facts they have seen before. We expected this to vary more between items, and didn't anticipate that the average would be this high. All other distributions of items appear to be as we expected, with nothing seeming out of the ordinary. We then perform a quick check of reaction times.
+
+```{r reaction times}
+#First: subsetting data to only include reaction time variables
+data_rt <- data[,c(1, 5, 8, 10, 12, 14)]
+
+#Summary of the reaction time data
+summary(data_rt)
+
+```
+<br>
+Almost all values are incredibly high, so we then investigate this for one of the reaction time variables per participant to figure out why this is the case.
+
+```{r reaction times per participant}
+data_rt$mean <- rowSums(data[,2:6])
+
+data_rt_mean <- data_rt %>%
+                   group_by(participant) %>%
+                   summarise(sum_rt = sum(mean, na.rm = TRUE),
+                   mean_rt = sum_rt/60)
+
+print(data_rt_mean, n = 45)
+
+``` 
+<br>
+From this, we can see that participant 31771 has reaction times that are way higher than expected, with a mean reaction time of 920101941 ms, which is over 10 days. We expect that this is due to a software issue, and thus remove this participant from further analysis. Furthermore, participant 32084 has a sum of 0, which is also strange. We will come back to this participant later.
+
+We then look at what items are more often indicated as implausible by participants.
+
+```{r item implausibility}
+#Table of plausibility per item
+table(data_60$item, data_60$implausibility)
+
+```
+<br>
+There are a few variables that are very likely to be implausible as indicated by participants, such as item 48 (1 out of 10 Wikipedia authors is a man). However, the total amount of participants (sum of 0 and 1 per item) only add up to 44, while we have 45 participants. Therefore, we look into participants' individual plausibility data.
+
+```{r plausibility per participant}
+#Table of plausibility per participant
+table(data_60$participant, data_60$implausibility)
+
+```
+<br>
+It looks like one participant (32084) is missing any data on implausibility, which happens if the participant never indicates that a fact is implausible, as the variable doesn't get created then. Therefore, we remove this participant from further analysis.
+
+```{r removing participants}
+#We now remove the two aforementioned participants
+data <- data[data$participant != "31771" & data$participant != "32084",]
+
+```
+<br>
+Finally, we create frequency plots for both surprise and plausibility, to investigate how many times participants indicated that a fact was surprising or implausible.
+
+```{r frequency plots of surprise and plausibility}
+plot_surprise <- ggplot(data = subset(data, !is.na(surprise)), aes(x = surprise)) +
+  geom_bar(fill = 'white', color = 'black') 
+
+
+plot_implausible <- ggplot(data = subset(data, !is.na(implausibility)), aes(x = implausibility)) +
+  geom_bar(fill = 'white', color = 'black') 
+
+ggarrange(plot_surprise, plot_implausible,
+          labels = c("Surprise", "Implausible"),
+          ncol = 2, nrow = 1)
+``` 
+<br>
+## Surprise measure
+
+While previous research often uses violation of expectancy (the error score) to calculate a surprise rating, we propose a different, more direct method of assessing surprise. We asked participants directly to indicate how surprised they were, on a scale of 1-5, resulting in a more meta-cognitive measure. </p>
+Firstly, we will calculate the more traditional violation of expectancy as a measure of surprise, and then correlate it to our direct measure of surprise. We expect these two measures to correlate moderately to highly. Facts are defined as violating the expectancy if the given_answer (the answer we give them) and original_estimate (the estimate participants made) differ by 2 or more. </p>
+We use the Phi coefficient to measure the correlation, which is calculated by using the formula for Pearson correlation over two binary variables. 
+
+
+```{r surprise rating}
+##Create violation of expectancy measure as a dummy variable
+#First: create a variable with the absolute difference of given_answer and original_estimate to compute an error score
+data$errorscore_baseline <- abs(data$original_estimate - data$given_answer)
+
+#Then: create binary variable where 0 = no violation of expectancy and 1 = violation of expectancy
+data$errorscore_violation <- ifelse(data$errorscore_baseline >= 2, 1, 0)
+
+#Quick plot to see the amount of facts that violated the expectancy (= high surprise)
+plot_violation <- ggplot(data = subset(data, !is.na(errorscore_violation)), aes(x = errorscore_violation)) +
+  geom_bar(fill = 'white', color = 'black') 
+
+plot_violation
+
+#From plot: about 2/3 of facts violated the expectancy
+
+##Now create a measure for our surprise rating
+#Create binary variable for low/high surprise, where participants indicated how surprised they were
+#1-3 = low surprise (coded as 0), 4-5 = high surprise (coded as 1)
+data$binary_surprise  <- ifelse(data$surprise <= 3, 0, 1)
+
+#Check the correlation between the two surprise measures
+#Using multiple methods as safety check that they do not differ too much, but we will use Pearson for analysis
+cor.test(data$errorscore_baseline, data$surprise, method = c("pearson", "kendall", "spearman"))
+#0.783, high correlation
+
+#Check the correlation between the surprise rating and implausibility
+cor.test(data$implausibility, data$surprise, method = c("pearson", "kendall", "spearman"))
+#0.574, moderate to high correlation
+
+```
+<br>
+Based on the correlation of 0.783, we can conclude that there is a strong positive relationship between the traditional violation of expectancy-based surprise measure and the metacognitive surprise measure introduced by us. We will therefore continue using our surprise measure for further analyses. </p>
+
+## Creating and centering variables
+To create a within-person measure of surprise, we will center surprise around a within-person mean. We will do the same for error scores for the baseline and the recognition condition.
+
+```{r creating and centering vars, message = FALSE}
+#First: Create binary error scores, where any deviation from the original given_answer = 0 (incorrect) and no deviation = 1 (correct)
+data$errorscore_baseline_bin <- ifelse(data$errorscore_baseline == 0, 1, 0)
+
+data$errorscore_recognition <- abs(data$recognition_answer - data$given_answer)
+data$errorscore_recognition_bin <- ifelse(data$errorscore_recognition == 0, 1, 0)
+
+#Then: split up the dataset so we only take the facts from day 1
+data_day1 <- subset(data, !is.na(surprise))
+
+#Compute mean surprise scores per participant, and combine it with the existing dataframe
+data_centered <- data_day1 %>%
+  group_by(participant) %>%
+  summarize(surprise_mean = mean(surprise), errorscore_baseline_mean = mean(errorscore_baseline)) %>%
+  left_join(data_day1, by = c("participant"))
+
+#Compute centered scores
+data_centered$surprise_centered <- data_centered$surprise - data_centered$surprise_mean
+data_centered$errorscore_baseline_centered <- data_centered$errorscore_baseline - data_centered$errorscore_baseline_mean
+
+#Getting some descriptives
+summary(data_centered[c("surprise_centered", "errorscore_baseline_centered")])
+summary(data[c("surprise", "errorscore_baseline")])
+```
+
+## Descriptive statistics
+To inspect correlations between variables, we created Pearson's correlation matrices for the independent variables of interest (surprise, participant, plausibility, and item) and outcome measures (recall, recognition, and updating).
+
+```{r descriptive statistics}
+data_descriptives <- data[, c("surprise", "participant", "item", "implausibility", "recognition_answer",
+                              "familiarity_rating", "estimate_day2")]
+
+cor(data_descriptives, use = "pairwise.complete.obs")
+```
+
+## Hypothesis 1
+
+Our first hypothesis concerns the <i>immediate recall</i>: how well do participants remember the numerical fact they were just presented with? For example, if the participant estimated that 2 out of 10 bus drivers are women, but we tell them that 8 out of 10 bus drivers are women, the participant here has to indicate 8 (the given_answer). </p> 
+The research question, then, is "do surprise and plausibility influence performance on an immediate recall test?". We expect that facts that are surprising but still plausible are remembered better than facts that are implausible or facts that are not surprising. Thus, we expect the difference between the answer given by us (given_answer) and the participant's estimate of that given_answer (recognition_answer) to be smaller in surprising but plausible facts. </p>
+</p>
+Since we cannot include surprise and plausibility in the same model due to multicollinearity, we will first investigate the role of surprise on immediate recall. There are two ways to code immediate recall in the model: (a) correct/incorrect, where an answer is only taken as correct if the participant fills in the exact number we presented them with, or (b) the absolute error, where we take the absolute difference between the answer participant filled in and the number we presented them with. To create the most complete picture, we will look into both of these ways. We will then create a model to investigate the role of plausibility on immediate recall in facts that are surprising only. 
+
+
+```{r hypothesis 1 surprise}
+#Linear + quadratic effect of surprise on immediate recall as binary variable
+model1 <- glmer(errorscore_recognition_bin ~ 1 + surprise_centered + I(surprise_centered^2) + (1 | participant) + (1 | item), data = data_centered, family = binomial)
+
+#Summary of the model
+summary(model1)
+
+#Table of significance effects
+tab_model(model1)
+
+#Significance testing
+Anova(model1)
+
+#Simple plot
+emmip(model1,  ~ surprise_centered,at = list(surprise_centered=c(-3:3)),CIs = TRUE,type ="scale")
+
+
+##Creating a pretty plot
+#Saving effect sizes into a data frame
+ESmodel1 <- effect(term = "surprise_centered", mod = model1)
+ESmodel1 <- as.data.frame(ESmodel1)
+
+summary(ESmodel1)
+
+#Aggregating raw data for plotting results on a group level
+data_centered_agg <- aggregate(errorscore_recognition_bin ~ participant + surprise_centered + surprise_centered^2,
+                               data = data_centered, mean, na.action = na.omit)
+
+#Plotting estimates
+plot_model1 <- ggplot() +
+  #Aggregated values of the raw data (black dots)
+  geom_point(data = data_centered_agg, aes(x = surprise_centered, y = errorscore_recognition_bin)) + 
+  #Values of model estimates (blue dots)
+  geom_point(data = ESmodel1, aes(x = surprise_centered, y = fit), color = "blue") +
+  #Line of model estimates (blue line)
+  geom_line(data = ESmodel1, aes(x = surprise_centered, y = fit), color = "blue") +
+  #Ribbon of CI limits for the model estimates (blue)
+  geom_ribbon(data = ESmodel1, aes(x = surprise_centered, ymin = lower, ymax = upper), alpha = 0.3, fill = "blue") +
+  #Labels to increase understanding
+  labs(x = "Surprise (centered)", y = "Probability error score recognition")
+
+plot_model1
+
+```
+<br>
+We find a significant quadratic effect (P = 0.022). 
+
+```{r testing assumptions model 1}
+#Linearity
+plot(resid(model1), data_centered$errorscore_recognition)
+
+#Normality of the residuals
+plot_model(model1, type = "diag")
+
+#Homogeneity of variance
+plot(model1)
+
+```
+
+```{r hypothesis 1 plausibility}
+#First: subsetting the data to only include highly surprising items (surprise = 4 or 5)
+data_extreme <- subset(data_centered, surprise > 3)
+
+#Model of plausibility on immediate recall as binary variable
+model2 <- glmer(errorscore_recognition_bin ~ 1 + implausibility + (1 | participant) +(1 | item), data = data_extreme, family = binomial)
+
+#Summary of the model
+summary(model2)
+
+#Table of significance effects
+tab_model(model2)
+
+#Significance testing
+Anova(model2)
+
+#Simple plot
+emmip(model2, ~ implausibility, CIs = TRUE, type = "scale")
+
+##Creating a pretty plot
+#Saving effect sizes into a data frame
+ESmodel2 <- effect(term = "implausibility", mod = model2)
+ESmodel2 <- as.data.frame(ESmodel2)
+
+summary(ESmodel2)
+
+#Aggregating raw data for plotting results on a group level
+data_centered_agg_implausibility <- aggregate(errorscore_recognition_bin ~ participant + implausibility,
+                                              data = data_extreme, mean, na.action = na.omit)
+
+#Plotting estimates
+plot_model2 <- ggplot() +
+  #Aggregated values of the raw data (black dots)
+  geom_point(data = data_centered_agg_implausibility, aes(x = implausibility, y = errorscore_recognition_bin)) + 
+  #Values of model estimates (blue dots)
+  geom_point(data = ESmodel2, aes(x = implausibility, y = fit), color = "blue") +
+  #Line of model estimates (blue line)
+  geom_line(data = ESmodel2, aes(x = implausibility, y = fit), color = "blue") +
+  #Ribbon of CI limits for the model estimates (blue)
+  geom_ribbon(data = ESmodel2, aes(x = implausibility, ymin = lower, ymax = upper), alpha = 0.3, fill = "blue") +
+  #Labels to increase understanding
+  labs(x = "Implausibility", y = "Probability error score recognition")
+
+plot_model2
+```
+
+```{r testing assumptions model 2}
+#Linearity
+plot(resid(model2), data_extreme$errorscore_recognition)
+
+#Normality of the residuals
+plot_model(model2, type = "diag")
+
+#Homogeneity of variance
+plot(model2)
+
+```
+
+<br>
+<h2>Hypothesis 2</h2>
+
+The second analysis concerns delayed recognition: how well can remember whether they have seen facts before? To test this, we implemented a second test moment two days after the original study. We presented participants with 90 facts, 45 of which they had seen before, the other 45 being new facts. Participants then had to indicate (a) how sure they are that they've seen the fact before on a Likert scale of 1-5 where 1 = definitely not seen before and 5 = definitely seen before, as well as (b) what <i>they believe the correct answer is</i>. For this hypothesis, we are interested in part A. </p>
+<br>
+Firstly, we split up the dataset to only include facts that were presented on both days, and create the necessary variables for further analyses.
+```{r setting up variables}
+#Splitting up the data to only include the 45 items that were included on day 2 
+data_45<- subset(data,familiarity == "1")
+
+#Centering this data
+#compute mean scores for surprise and baseline error and combine withe data frame
+data_45_centered <- data_45 %>%
+  group_by(participant) %>%
+  summarize(surprise_mean = mean(surprise), errorscore_baseline_mean = mean(errorscore_baseline)) %>%
+  left_join(data_45, by = c("participant"))
+
+#Compute centered scores
+data_45_centered$surprise_centered <- data_45_centered$surprise - data_45_centered$surprise_mean
+data_45_centered$errorscore_baseline_centered <- data_45_centered$errorscore_baseline - data_45_centered$errorscore_baseline_mean
+
+#Code the recognition variable
+#We take recognition = 5 as the participant is sure they've seen the fact before, and 1-4 as the participant is not sure that they have seen it before
+#All of the items in this subset have been seen before, so 5 = correct and 1-4 = incorrect
+#Thus: 1-4 = 0 (incorrect), 5 = 1 (correct)
+data_45_centered$recognition_bin <- ifelse(data_45_centered$familiarity_rating == 5, 1, 0)
+
+```
+
+We can then perform the analysis to investigate whether surprise influences delayed recognition.
+
+```{r hypothesis 2 surprise}
+#Linear + quadratic effect of surprise on immediate recall as binary variable
+model3 <- glmer(recognition_bin ~ 1 + surprise_centered + I(surprise_centered^2) + (1 | participant) + (1 | item), data = data_45_centered, family = binomial)
+
+#Summary of the model
+summary(model3)
+
+#Table of significance effects
+tab_model(model3)
+
+#Significance testing
+Anova(model3)
+
+#Simple plot
+emmip(model3,  ~ surprise_centered,at = list(surprise_centered=c(-3:3)),CIs = TRUE,type ="scale")
+
+##Creating a pretty plot
+#Saving effect sizes into a data frame
+ESmodel3 <- effect(term = "surprise_centered", mod = model3)
+ESmodel3 <- as.data.frame(ESmodel3)
+
+summary(ESmodel3)
+
+#Aggregating raw data for plotting results on a group level
+data_45_centered_agg <- aggregate(recognition_bin ~ participant + surprise_centered + surprise_centered^2,
+                               data = data_45_centered, mean, na.action = na.omit)
+
+#Plotting estimates
+plot_model3 <- ggplot() +
+  #Aggregated values of the raw data (black dots)
+  geom_point(data = data_45_centered_agg, aes(x = surprise_centered, y = recognition_bin)) + 
+  #Values of model estimates (blue dots)
+  geom_point(data = ESmodel3, aes(x = surprise_centered, y = fit), color = "blue") +
+  #Line of model estimates (blue line)
+  geom_line(data = ESmodel3, aes(x = surprise_centered, y = fit), color = "blue") +
+  #Ribbon of CI limits for the model estimates (blue)
+  geom_ribbon(data = ESmodel3, aes(x = surprise_centered, ymin = lower, ymax = upper), alpha = 0.3, fill = "blue") +
+  #Labels to increase understanding
+  labs(x = "Surprise (centered)", y = "Probability error score recognition")
+
+plot_model3
+
+```
+
+```{r testing assumptions model 3}
+#Linearity
+plot(resid(model3), data_centered$recognition)
+
+#Normality of the residuals
+plot_model(model3, type = "diag")
+
+#Homogeneity of variance
+plot(model3)
+
+```
+
+```{r hypothesis 2 implausibility}
+#First: subsetting the data to only include highly surprising items (surprise = 4/5)
+data_45_extreme <- subset(data_45_centered, surprise > 3)
+
+#Model of plausibility on immediate recall as binary var
+model4 <- glmer(recognition_bin ~ 1 + implausibility  + (1 | participant) +(1 |item), data = data_45_extreme, family = binomial)
+
+#Summary
+summary(model4)
+
+tab_model(model4)
+
+#Significance testing
+Anova(model4)
+
+#Plot
+emmip(model4, ~ implausibility, CIs = TRUE, type = "scale")
+
+##Creating a pretty plot
+#Saving effect sizes into a data frame
+ESmodel4 <- effect(term = "implausibility", mod = model4)
+ESmodel4 <- as.data.frame(ESmodel4)
+
+summary(ESmodel4)
+
+#Aggregating raw data for plotting results on a group level
+data_centered_45_implausibility <- aggregate(recognition_bin ~ participant + implausibility,
+                                              data = data_45_extreme, mean, na.action = na.omit)
+
+#Plotting estimates
+plot_model4 <- ggplot() +
+  #Aggregated values of the raw data (black dots)
+  geom_point(data = data_centered_45_implausibility, aes(x = implausibility, y = recognition_bin)) + 
+  #Values of model estimates (blue dots)
+  geom_point(data = ESmodel4, aes(x = implausibility, y = fit), color = "blue") +
+  #Line of model estimates (blue line)
+  geom_line(data = ESmodel4, aes(x = implausibility, y = fit), color = "blue") +
+  #Ribbon of CI limits for the model estimates (blue)
+  geom_ribbon(data = ESmodel4, aes(x = implausibility, ymin = lower, ymax = upper), alpha = 0.3, fill = "blue") +
+  #Labels to increase understanding
+  labs(x = "Implausibility", y = "Probability error score recognition")
+
+plot_model4
+```
+
+```{r testing assumptions model 4}
+#Linearity
+plot(resid(model4), data_45_extreme$recognition)
+
+#Normality of the residuals
+plot_model(model4, type = "diag")
+
+#Homogeneity of variance
+plot(model4)
+
+```
+
+## Hypothesis 3
+For the final research question, we were interested in part (b) of the aforementioned task: where participants had to indicate what <i>they believed to be the correct answer</i>. To investigate this, we first create two error scores: an original error score by subtracting the original estimate in block one from the provided answer, and an updating error score by subtracting the estimate in block three from the provided answer. We can then subtract the updating error score from the original error score to create a measure of whether participants updated their memory towards the presented answer. <br>
+We expect that low-surprise items often correspond to an answer that is close to the presented answer (small original error score) and high-surprise items often correspond to an answer that is further away from the presented answer (large original error score), thus we expect a linear effect between surprise and updating as there is more room for improvement on highly surprising items. However, we expect a different effect in implausible items: if participants see implausible items as an anomaly, they will reject it from their belief system, showing little updating. We thus expect to find an inverted U-shape for the effect of surprise in implausible items, and a difference in updating between high- and low-plausibility items.
+<br>
+<br>
+We first create the necessary variables.
+```{r hypothesis 3 creating variables}
+#Create error score variables
+data_45_centered$errorscore_estimate <- abs(data_45$estimate_day2 - data_45$given_answer)
+data_45_centered$errorscore_estimate_bin <- ifelse(data_45$errorscore_baseline == 0, 0, 1) #0 = no updating, 1 = some amount of updating
+
+#Create updating variable
+data_45_centered$updating <- data_45_centered$errorscore_estimate - data_45_centered$errorscore_baseline
+data_45_centered$updating_bin <- ifelse(data_45_centered$updating == 0, 0, 1) #0 = no updating, 1 = some amount of updating
+
+#Create accuracy variables
+data_45_centered$accuracy_temp <- abs(data_45$estimate_day2 - data_45$given_answer)
+data_45_centered$accuracy <- ifelse(data_45_centered$accuracy_temp == 0, 1, 0) #0 = not accurate, 1 = accurate
+
+```
+
+
+We can then perform the analyses to investigate whether surprise influences to what extent participants update their belief systems.
+
+```{r hypothesis 3 surprise}
+model5 <- lmer(updating ~ 1 + surprise_centered + I(surprise_centered^2) + (1 | participant) + (1 | item), data = data_45_centered)
+
+#Summary
+summary(model5)
+
+tab_model(model5)
+
+#Significance testing
+Anova(model5)
+
+#Plot
+emmip(model5, ~ surprise_centered, at = list(surprise_centered=c(-3:3)), CIs = TRUE)
+
+##Creating a pretty plot
+#Saving effect sizes into a data frame
+ESmodel5 <- effect(term = "surprise_centered", mod = model5)
+ESmodel5 <- as.data.frame(ESmodel5)
+
+summary(ESmodel5)
+
+#Aggregating raw data for plotting results on a group level
+data_45_updating_agg <- aggregate(updating ~ participant + surprise_centered + surprise_centered^2,
+                               data = data_45_centered, mean, na.action = na.omit)
+
+#Plotting estimates
+plot_model5 <- ggplot() +
+  #Aggregated values of the raw data (black dots)
+  geom_point(data = data_45_updating_agg, aes(x = surprise_centered, y = updating)) + 
+  #Values of model estimates (blue dots)
+  geom_point(data = ESmodel5, aes(x = surprise_centered, y = fit), color = "blue") +
+  #Line of model estimates (blue line)
+  geom_line(data = ESmodel5, aes(x = surprise_centered, y = fit), color = "blue") +
+  #Ribbon of CI limits for the model estimates (blue)
+  geom_ribbon(data = ESmodel5, aes(x = surprise_centered, ymin = lower, ymax = upper), alpha = 0.3, fill = "blue") +
+  #Labels to increase understanding
+  labs(x = "Surprise (centered)", y = "Updating")
+
+plot_model5
+```
+
+```{r testing assumptions model 5}
+#Linearity
+plot(resid(model5), data_45_centered$updating)
+
+#Normality of the residuals
+plot_model(model5, type = "diag")
+
+#Homogeneity of variance
+plot(model5)
+
+```
+
+<br>
+Finally, we can investigate the role of plausibility in highly surprising items on updating.
+
+```{r hypothesis 3 plausibility}
+#Creating extreme values dataset
+data_45_extreme <- subset(data_45_centered, surprise > 3)
+
+#Model of plausibility on updating
+model6 <- lmer(updating ~ 1 + implausibility + (1 | participant) + (1 | item), data = data_45_extreme)
+
+#Summary
+summary(model6)
+
+tab_model(model6)
+
+#Significance testing
+Anova(model6)
+
+#Plot
+emmip(model6, ~ implausibility, CIs = TRUE)
+
+##Creating a pretty plot
+#Saving effect sizes into a data frame
+ESmodel6 <- effect(term = "implausibility", mod = model6)
+ESmodel6 <- as.data.frame(ESmodel6)
+
+summary(ESmodel6)
+
+#Aggregating raw data for plotting results on a group level
+data_45_extreme_agg <- aggregate(updating ~ participant + implausibility, 
+                                 data = data_45_extreme, mean, na.action = na.omit)
+
+#Plotting estimates
+plot_model6 <- ggplot() +
+  #Aggregated values of the raw data (black dots)
+  geom_point(data = data_45_extreme_agg, aes(x = implausibility, y = updating)) + 
+  #Values of model estimates (blue dots)
+  geom_point(data = ESmodel6, aes(x = implausibility, y = fit), color = "blue") +
+  #Line of model estimates (blue line)
+  geom_line(data = ESmodel6, aes(x = implausibility, y = fit), color = "blue") +
+  #Ribbon of CI limits for the model estimates (blue)
+  geom_ribbon(data = ESmodel6, aes(x = implausibility, ymin = lower, ymax = upper), alpha = 0.3, fill = "blue") +
+  #Labels to increase understanding
+  labs(x = "Implausibility", y = "Updating")
+
+plot_model6
+```
+<br>
+Thus, we find a trend for an effect of plausibility. 
+
+```{r testing assumptions model 6}
+#Linearity
+plot(resid(model6), data_45_extreme$updating)
+
+#Normality of the residuals
+plot_model(model6, type = "diag")
+
+#Homogeneity of variance
+plot(model6)
+
+```
+
+## Exploratory analyses
+We exploratively look at the effect of plausibility on binary accuracy on the updating task. Accuracy, here, looks at whether participants filled in the provided answer on day 2. 
+
+```{r hyp 3 plausibility accuracy}
+#Model of plausibility on updating
+model7 <- glmer(accuracy ~ 1+ implausibility + (1 | participant) +(1 | item), data = data_45_extreme, family = binomial)
+
+#Summary
+summary(model7)
+
+tab_model(model7)
+
+#Significance testing
+Anova(model7)
+
+#Plot
+emmip(model7, ~ implausibility, CIs = TRUE)
+
+```
+<br>
+Once again, we find a trend. 
+
+We then investigated the direction of updating of highly surprising items.
+
+```{r direction of updating}
+#Creating updating variable with direction
+data_45_extreme$original_errorscore <- abs(data_45_extreme$original_estimate - data_45_extreme$given_answer)
+data_45_extreme$updated_errorscore<- abs(data_45_extreme$estimate_day2 - data_45_extreme$given_answer)
+  
+data_45_extreme$directional_updating <- (data_45_extreme$updated_errorscore - data_45_extreme$original_errorscore) 
+#If number is negative, participant came closer to the given answer
+
+plot_updating <- ggplot(data = subset(data_45_extreme, implausibility == 1), aes(x = directional_updating)) +
+  geom_bar(fill = 'white', color = 'black') +
+  xlim(-10, 10)
+
+plot_updating
+
+plot_updating_plausible <- ggplot(data = subset(data_45_extreme, implausibility == 0), aes(x = directional_updating)) +
+  geom_bar(fill = 'white', color = 'black') +
+  xlim(-10, 10)
+
+plot_updating_plausible
+
+```
+<br>
+Thus, while not statistically significant, there seems to be a pattern/trend of participants updating their belief system to shift closer to the presented answer.
+
+
+## Session information
+In order to increase the ease of replication, we include our session information.
+```{r session info}
+#Information about the session, for easier replication
+sessionInfo()
+
+``` 
